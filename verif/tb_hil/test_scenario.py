@@ -8,7 +8,8 @@
 firmware は MO の後に BS<board> を追加送信するが、シナリオには含まれないため
 受信側で読み飛ばす。PI/PO も同様に除外する。
 
-VE 応答は実装名が異なるため prefix "VE01" のみ照合する。
+VE 応答は実装名が異なるため prefix "+VE02" のみ照合する (RUP v0.2)。
+着手の方式は conftest の idle_with_lsb が lsb (XS0) にそろえる。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ SCENARIOS_DIR = REPO_ROOT / "verif" / "golden" / "scenarios"
 _SCENARIO_FILES = sorted(SCENARIOS_DIR.glob("*.txt"))
 
 # firmware が応答として追加送信する行のうち、シナリオ照合から除外するプレフィックス
-_SKIP_PREFIXES = frozenset({"BS", "PI", "PO"})
+_SKIP_PREFIXES = frozenset({"BS", "+P"})
 
 
 def _parse(path: Path) -> list[tuple[str, str]]:
@@ -40,7 +41,7 @@ def _parse(path: Path) -> list[tuple[str, str]]:
 
 
 def _recv(dut, timeout: float = 5.0) -> str:
-    """BS / PI / PO を読み飛ばして次の有効行を返す。"""
+    """BS / +PI を読み飛ばして次の有効行を返す。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         raw = dut.readline()
@@ -54,21 +55,10 @@ def _recv(dut, timeout: float = 5.0) -> str:
 
 
 def _match(actual: str, expected: str) -> bool:
-    """VE 応答は "VE01" prefix 一致、それ以外は完全一致。"""
-    if expected.startswith("VE01"):
-        return actual.startswith("VE01")
+    """VE 応答は "+VE02" prefix 一致、それ以外は完全一致。"""
+    if expected.startswith("+VE02"):
+        return actual.startswith("+VE02")
     return actual == expected
-
-
-@pytest.fixture(autouse=True)
-def reset_firmware(dut) -> None:
-    """各テスト前に EB を送って firmware を IDLE 状態に戻す。
-    EB は無応答なので送信後に入力バッファをクリアするだけでよい。
-    """
-    dut.reset_input_buffer()
-    dut.write(b"EB\r\n")
-    time.sleep(0.05)
-    dut.reset_input_buffer()
 
 
 @pytest.mark.parametrize(

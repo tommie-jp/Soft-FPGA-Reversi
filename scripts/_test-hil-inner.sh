@@ -19,7 +19,7 @@ if ! lsusb 2>/dev/null | grep -qi 'cmsis\|2e8a:000c'; then
     echo "WARN: Debug Probe (CMSIS-DAP / 2e8a:000c) が lsusb に見えない" >&2
     echo "  Windows: scripts/wsl-attach.sh で attach 済みか確認" >&2
 fi
-if ! lsusb 2>/dev/null | grep -qi '2e8a:000a\|2e8a:000f'; then
+if ! lsusb 2>/dev/null | grep -qi '2e8a:0009\|2e8a:000a\|2e8a:000f'; then
     echo "INFO: Pico 2 が lsusb に見えない (--no-flash 指定なら無視可)" >&2
 fi
 

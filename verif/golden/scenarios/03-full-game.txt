@@ -1,7 +1,7 @@
 # シナリオ: 1局まるごと (開局 → EB 終局通知)
 # VE 応答・auto-pass 2回・終局判定 (EB) まで含む
 TX VE
-RX VE01tommie-py-cpu
+RX +VE02
 TX SB
 RX MOd3
 TX MOc3

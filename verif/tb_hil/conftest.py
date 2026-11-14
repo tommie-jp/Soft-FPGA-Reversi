@@ -121,3 +121,24 @@ def expect():
             f"  受信した行: {seen[-10:]!r}"
         )
     return _expect
+
+
+@pytest.fixture(autouse=True)
+def idle_with_lsb(dut) -> None:
+    """各テストの前に、待ちの状態 + 着手の方式 lsb (0) にそろえる。
+
+    ED (終局の通知、応答なし) で対局の外に戻し、XS0 で方式を選び直す。
+    実機の DIP スイッチがどの位置でも、シナリオ (lsb の手が前提) が通る。
+    """
+    dut.reset_input_buffer()
+    dut.write(b"ED\r\n")
+    time.sleep(0.05)
+    dut.write(b"XS0\r\n")
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        line = dut.readline().decode("utf-8", errors="replace").rstrip()
+        if line == "+XS0":
+            break
+    else:
+        raise AssertionError("XS0 に +XS0 が返らない (古いファームが入っている?)")
+    dut.reset_input_buffer()

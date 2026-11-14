@@ -1,12 +1,8 @@
-"""ファームウェア基本疎通の HIL smoke test。
+"""ファームウェア基本疎通の HIL smoke test (RUP v0.2)。
 
-旧 Step 1 の `Hello, world!` 出力テストは proto.v 統合 (Step 3+) で
-main.cpp から該当 printf が削除されたため、現在のファームウェアでは
-意味を成さない。代わりに以下の最小疎通を検証する:
-
-    - PI を投げると PO が返る (UART テキストプロトコル疎通)
-    - VE で VE01 prefix の応答が返る (バージョン応答)
-    - 起動直後の不審な余分バイトが無い (静かに待機している)
+    - PI を投げると +PI が返る
+    - VE で +VE02 で始まる名前が返る
+    - 何も送らなければ何も出てこない (静かに待機している)
 
 これにより「ファームウェアが起動して、UART を喋れる」基本要件を担保する。
 """
@@ -16,24 +12,20 @@ import time
 
 
 def test_pi_smoke(dut, expect):
-    """ファームが起動していて PI に PO で応答する。"""
-    dut.reset_input_buffer()
+    """ファームが起動していて PI に +PI で応答する。"""
     dut.write(b"PI\r\n")
-    line = expect(dut, r"^PO$", timeout=5.0)
-    assert line == "PO"
+    assert expect(dut, r"^\+PI$", timeout=5.0) == "+PI"
 
 
 def test_ve_smoke(dut, expect):
-    """VE が VE01 prefix で応答する。"""
-    dut.reset_input_buffer()
+    """VE が +VE02 で始まる名前を返す。"""
     dut.write(b"VE\r\n")
-    line = expect(dut, r"^VE01", timeout=5.0)
-    assert line.startswith("VE01"), f"VE01 prefix を期待: {line!r}"
+    line = expect(dut, r"^\+VE02", timeout=5.0)
+    assert len(line) > len("+VE02"), f"名前が無い: {line!r}"
 
 
 def test_idle_serial_is_quiet(dut):
-    """無入力時に不審な余分バイトが出てこない (起動後 0.5s 採取して空)。"""
-    dut.reset_input_buffer()
+    """無入力時に不審な余分バイトが出てこない (0.5s 採取して空)。"""
     time.sleep(0.5)
     leftover = dut.read(dut.in_waiting or 0)
     assert not leftover, f"アイドル時に余分なバイト: {leftover!r}"

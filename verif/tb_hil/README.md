@@ -1,7 +1,12 @@
 # tb_hil — 実機 HIL テスト
 
 Pico 2 + Debug Probe を実機接続した状態で走らせる pytest スイート。
-Step 1（Hello UF2）の検証から始め、Step 3 以降のプロトコル骨格・シナリオ回帰へ拡張していく。
+RUP v0.2 の応答・`XS` (着手の方式)・シナリオ回帰を確かめる。中身は
+[doc/03-テスト戦略](../../doc/03-テスト戦略.md#今あるテスト-rup-v02)。
+
+```bash
+scripts/test-hil.sh --no-flash --port /dev/ttyACM1   # 書き込み済みのファームに対して、Pico 2 の USB で
+```
 
 ## 前提
 

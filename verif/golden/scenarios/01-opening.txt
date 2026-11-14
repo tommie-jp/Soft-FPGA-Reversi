@@ -1,7 +1,7 @@
 # シナリオ: 開局から5手
 # CPU=BLACK (SB)、first-legal 戦略で決定的に進む
 TX VE
-RX VE01tommie-py-cpu
+RX +VE02
 TX SB
 RX MOd3
 TX MOc3
