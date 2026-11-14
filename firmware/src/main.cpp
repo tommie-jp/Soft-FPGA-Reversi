@@ -36,6 +36,10 @@ namespace {
 constexpr uint kDipPins[4] = {10, 11, 12, 13};
 constexpr uint32_t kDipSettleUs = 100;  // プルアップが効くまで待つ
 
+// 内蔵 LED の点滅 (生きている印)。ループの回数ではなく時間で切り替えるので、
+// DUT の重さ (1 tick の長さ) が変わっても 2 Hz のまま
+constexpr uint32_t kLedHalfPeriodUs = 250000;
+
 // 起動時に読んだ DIP スイッチの値 (XI で表示する)
 static uint8_t s_dip_value = 0;
 
@@ -180,7 +184,7 @@ int main() {
     constexpr int kMaxSilentCycles = 16;
 
     bool led = false;
-    uint32_t led_div = 0;
+    uint32_t led_toggled_us = time_us_32();
     while (true) {
         const bool dut_ready = !awaiting_response;
 
@@ -247,7 +251,9 @@ int main() {
             }
         }
 
-        if ((++led_div & 0xFFFF) == 0) {
+        const uint32_t now_us = time_us_32();
+        if (now_us - led_toggled_us >= kLedHalfPeriodUs) {
+            led_toggled_us = now_us;
             led = !led;
             gpio_put(led_pin, led);
         }
