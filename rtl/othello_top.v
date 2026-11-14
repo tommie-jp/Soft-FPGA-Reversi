@@ -26,7 +26,12 @@ module othello_top (
     input  wire [7:0]  rx_byte,
     // TX byte stream (firmware: 1 cycle ごとに valid を見て stdout へ)
     output wire        tx_valid,
-    output wire [7:0]  tx_byte
+    output wire [7:0]  tx_byte,
+    // 状態の LED 用 (firmware/src/status_leds.cpp が GP2〜GP5 に出す)
+    output wire        in_game,
+    output wire        err_pulse,
+    output wire        pass_pulse,
+    output wire [1:0]  strategy_now
 );
 
     proto u_proto (
@@ -36,7 +41,11 @@ module othello_top (
         .rx_valid (rx_valid),
         .rx_byte  (rx_byte),
         .tx_valid (tx_valid),
-        .tx_byte  (tx_byte)
+        .tx_byte  (tx_byte),
+        .in_game      (in_game),
+        .err_pulse    (err_pulse),
+        .pass_pulse   (pass_pulse),
+        .strategy_now (strategy_now)
     );
 
 endmodule

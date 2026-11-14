@@ -27,6 +27,7 @@ extern char __flash_binary_end;
 extern char __bss_end__;
 }
 
+#include "status_leds.h"
 #include "stub_mutex.h"
 #include "Vothello_top.h"
 
@@ -39,6 +40,10 @@ constexpr uint32_t kDipSettleUs = 100;  // プルアップが効くまで待つ
 // 内蔵 LED の点滅 (生きている印)。ループの回数ではなく時間で切り替えるので、
 // DUT の重さ (1 tick の長さ) が変わっても 2 Hz のまま
 constexpr uint32_t kLedHalfPeriodUs = 250000;
+
+// 外付けの LED 4 個に値を 2 進数で出す時間
+constexpr uint32_t kShowDipUs      = 2000000;  // 起動時の DIP スイッチ
+constexpr uint32_t kShowStrategyUs = 1000000;  // XS で変えた方式
 
 // 起動時に読んだ DIP スイッチの値 (XI で表示する)
 static uint8_t s_dip_value = 0;
@@ -148,6 +153,7 @@ void apply_reset(Vothello_top* dut, uint8_t strategy) {
 
 int main() {
     stdio_init_all();
+    status_leds::init();
 
     const uint led_pin = PICO_DEFAULT_LED_PIN;
     gpio_init(led_pin);
@@ -160,6 +166,8 @@ int main() {
     auto* const dut = new Vothello_top{ctx, "othello_top"};
     s_dip_value = read_dip_switch();
     apply_reset(dut, s_dip_value);
+    status_leds::show_value(s_dip_value, kShowDipUs);
+    uint8_t last_strategy = dut->strategy_now;
 
     // XB/XI コマンドインターセプト用ラインバッファ (RUP v0.2 X* 拡張)。
     // 行終端は LF (CR+LF / LF 単独どちらも受け付ける)。
@@ -196,14 +204,17 @@ int main() {
                 if (rx_linebuf_len < 35)
                     rx_linebuf[rx_linebuf_len++] = static_cast<char>(c);
                 if (c == '\n') {
+                    status_leds::on_rx_line();
                     // LF で行確定。先頭 2 文字でコマンド判定（CR は無視）
                     const char c0 = rx_linebuf[0];
                     const char c1 = (rx_linebuf_len >= 2) ? rx_linebuf[1] : 0;
                     if (c0 == 'X' && c1 == 'B') {
                         bench_report_protocol();
+                        status_leds::on_tx_line();
                         rx_linebuf_len = 0;
                     } else if (c0 == 'X' && c1 == 'I') {
                         id_report();
+                        status_leds::on_tx_line();
                         rx_linebuf_len = 0;
                     } else {
                         rx_line_ready = true;
@@ -235,9 +246,19 @@ int main() {
 
         tick(dut);
 
+        // 状態の LED (DUT の出力は tick 後の値。パルスは 1 tick だけ立つ)
+        if (dut->err_pulse)  status_leds::on_error();
+        if (dut->pass_pulse) status_leds::on_pass();
+        if (dut->strategy_now != last_strategy) {
+            last_strategy = dut->strategy_now;
+            status_leds::show_value(last_strategy, kShowStrategyUs);
+        }
+        status_leds::update(dut->in_game);
+
         // TX: DUT が 1 byte 出していれば stdout に流す
         if (dut->tx_valid) {
             putchar_raw(static_cast<int>(dut->tx_byte));
+            if (dut->tx_byte == '\n') status_leds::on_tx_line();
             seen_tx_in_response = true;
             tx_quiet            = 0;
         } else {

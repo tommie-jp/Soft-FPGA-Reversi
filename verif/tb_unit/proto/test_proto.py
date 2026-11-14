@@ -944,3 +944,103 @@ async def dip_reset_overrides_xs(dut) -> None:
     assert await _query(dut, b"XS2\r\n") == b"+XS2\r\n"
     await reset(dut, 1)
     assert await _query(dut, b"XS\r\n") == b"+XS1\r\n"
+
+
+# ===== 状態の LED 用の出力 =====
+#
+#   in_game       対局中 (SB / SW から EB / EW / ED まで) は 1
+#   err_pulse     エラー応答 (-01 / -06 / -00) を返すと決めた cycle に 1
+#   pass_pulse    自分の合法手がなく PA を返すと決めた cycle に 1
+#   strategy_now  今の着手の方式 (0〜2)
+
+
+class _PulseCounter:
+    """毎 cycle、指定の信号が 1 の回数を数える。"""
+
+    def __init__(self, dut, name: str) -> None:
+        self.count = 0
+        self._sig = getattr(dut, name)
+        self._dut = dut
+        cocotb.start_soon(self._run())
+
+    async def _run(self) -> None:
+        while True:
+            await RisingEdge(self._dut.clk)
+            if int(self._sig.value):
+                self.count += 1
+
+
+@cocotb.test()
+async def in_game_follows_game(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut)
+    assert int(dut.in_game.value) == 0
+    await send_line(dut, b"SB\r\n")
+    await collect_response(dut)
+    await collect_response(dut)
+    assert int(dut.in_game.value) == 1
+    await send_line(dut, b"ED\r\n")
+    await settle(dut)
+    assert int(dut.in_game.value) == 0
+    await send_line(dut, b"SW\r\n")
+    await settle(dut)
+    assert int(dut.in_game.value) == 1
+
+
+@cocotb.test()
+async def err_pulse_on_error_responses(dut) -> None:
+    """エラー応答ごとに 1 cycle だけ立つ。正しい行では立たない。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut)
+    err = _PulseCounter(dut, "err_pulse")
+    for line in (b"PI\r\n", b"VE\r\n", b"CA\r\n", b"XS\r\n"):
+        await _query(dut, line)
+    assert err.count == 0
+    assert await _query(dut, b"XX\r\n") == b"-01 unknown\r\n"
+    assert err.count == 1
+    assert await _query(dut, b"XS9\r\n") == b"-00 bad arg\r\n"
+    assert err.count == 2
+    await send_line(dut, b"SB\r\n")
+    await collect_response(dut)
+    await collect_response(dut)
+    assert err.count == 2
+    assert await _query(dut, b"XS1\r\n") == b"-06 in game\r\n"
+    assert err.count == 3
+    assert await _query(dut, b"MOz9\r\n") == b"-01 unknown\r\n"
+    assert err.count == 4
+
+
+@cocotb.test()
+async def pass_pulse_when_no_legal_move(dut) -> None:
+    """白が最初の合法手を打ち続けると、9 手目のあと黒 (lsb) は打てずに PA を返す。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 0)
+    passes = _PulseCounter(dut, "pass_pulse")
+    await send_line(dut, b"SB\r\n")
+    await collect_response(dut)
+    await collect_response(dut)
+    board = _init_board()
+    _apply_move(board, 2, 3, _BLACK)  # d3
+    for ply in range(9):
+        opp = sorted(_legal_moves(board, _WHITE), key=_idx)[0]
+        _apply_move(board, *opp, _WHITE)
+        await send_line(dut, b"MO" + _fmt_coord(*opp).encode() + b"\r\n")
+        first = await collect_response(dut)
+        mine = sorted(_legal_moves(board, _BLACK), key=_idx)
+        if not mine:
+            assert first == b"PA\r\n", f"ply {ply}: {first!r}"
+            assert passes.count == 1
+            return
+        assert passes.count == 0, f"ply {ply}"
+        await collect_response(dut)  # BS
+        _apply_move(board, *mine[0], _BLACK)
+    raise AssertionError("パスの局面に届かなかった")
+
+
+@cocotb.test()
+async def strategy_now_reports_current(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 2)
+    assert int(dut.strategy_now.value) == 2
+    await _query(dut, b"XS1\r\n")
+    assert int(dut.strategy_now.value) == 1

@@ -39,7 +39,12 @@ module proto (
     input  wire [7:0]  rx_byte,
     // TX byte stream (tx_valid asserted 1 cycle per byte)
     output reg         tx_valid,
-    output reg  [7:0]  tx_byte
+    output reg  [7:0]  tx_byte,
+    // 状態の LED 用 (firmware が GPIO に出す)
+    output wire        in_game,       // 対局中 (SB/SW から EB/EW/ED まで)
+    output reg         err_pulse,     // エラー応答を返すと決めた cycle に 1
+    output reg         pass_pulse,    // 合法手がなく PA を返すと決めた cycle に 1
+    output wire [1:0]  strategy_now   // 今の着手の方式
 );
 
     // ----- デバッグ用 cycle カウンタ (シミュレーション専用) -----
@@ -276,6 +281,11 @@ module proto (
     wire xs_digit  = (buf_mem[2] >= "0") && (buf_mem[2] <= "2");
     wire is_xs_get = is_xs && (buf_len == 8'd2);
     wire is_xs_set = is_xs && (buf_len == 8'd3) && xs_digit;
+    // エラー応答 (-01 / -06 / -00) になる行。DISPATCH の if 連鎖と同じ判定
+    wire is_ok_line = is_pi || is_ve || is_ca || is_xs_get ||
+                      (is_xs_set && gs_phase == PHASE_IDLE) ||
+                      is_sb || is_sw || (is_mo && cd_parse_valid) || is_pa ||
+                      is_eb || is_ew || is_ed;
 
     // ----- 内部状態 + 計算モジュール群 -----
 
@@ -381,8 +391,13 @@ module proto (
         .flip(fc_flip)
     );
 
+    assign in_game      = (gs_phase != PHASE_IDLE);
+    assign strategy_now = strat_q;
+
     always @(posedge clk) begin
         if (rst) begin
+            err_pulse  <= 1'b0;
+            pass_pulse <= 1'b0;
             // 割り当てのない値は lsb として扱う
             strat_q  <= (strategy == 4'd1) ? STRAT_MAX_GAIN :
                         (strategy == 4'd2) ? STRAT_CORNER   : STRAT_LSB;
@@ -404,6 +419,8 @@ module proto (
             gs_in_phase      <= 0;
         end else begin
             tx_valid <= 0;  // デフォルト下げ。S_TX で必要なときだけ立てる。
+            err_pulse  <= 1'b0;
+            pass_pulse <= 1'b0;
             // game_state コマンドは毎 cycle 0 に戻す (1-cycle pulse 想定)
             gs_cmd_init      <= 0;
             gs_cmd_set_board <= 0;
@@ -442,6 +459,7 @@ module proto (
                         // 空行 (CR+LF のみ) → サイレント破棄 (RUP v0.2 §5.1)
                         state <= S_RECV;
                     end else begin
+                        err_pulse <= !is_ok_line;
                         // TX モードと index/end をセット (デフォルトは ROM 経路)
                         tx_mode <= TX_MODE_ROM;
                         if (is_pi) begin
@@ -563,6 +581,7 @@ module proto (
                     end
                     // ps_valid=0 (合法手なし) → PA\n を送出し WAIT_OPP へ
                     if (!ps_valid) begin
+                        pass_pulse <= 1'b1;
                         gs_cmd_set_phase <= 1'b1;
                         gs_in_phase      <= PHASE_WAIT_OPP;
                         tx_mode <= TX_MODE_ROM;

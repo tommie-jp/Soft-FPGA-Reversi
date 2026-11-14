@@ -80,6 +80,7 @@ function(add_reversi_firmware TARGET_NAME)
 
     add_executable(${TARGET_NAME}
         src/main.cpp
+        src/status_leds.cpp
         src/cxx_minimal.cpp
         ${VERILATED_SOURCES}
         ${VERILATOR_RUNTIME}
