@@ -9,6 +9,10 @@
 //   3. tx_valid が立っていれば tx_byte を stdout に出す
 //
 // ループは ~1 µs 周期で回るので 115200 baud (= 87 µs/byte) に十分間に合う。
+//
+// 着手の方式は起動時に DIP スイッチ (GP10〜GP13) を読んで DUT の strategy に渡す。
+// 配線は Soft-FPGA-TD4 と同じ: スイッチの片側が GPIO、反対側が GND。内蔵プルアップを使い、
+// ON (Low) を 1 と読む。GP10 (スイッチ 1 番) が最上位ビット。
 
 #include <cstdio>
 
@@ -27,6 +31,27 @@ extern char __bss_end__;
 #include "Vothello_top.h"
 
 namespace {
+
+// DIP スイッチ: GP10 (1 番, MSB) 〜 GP13 (4 番, LSB)
+constexpr uint kDipPins[4] = {10, 11, 12, 13};
+constexpr uint32_t kDipSettleUs = 100;  // プルアップが効くまで待つ
+
+// 起動時に読んだ DIP スイッチの値 (XI で表示する)
+static uint8_t s_dip_value = 0;
+
+uint8_t read_dip_switch() {
+    for (const uint pin : kDipPins) {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_pull_up(pin);
+    }
+    sleep_us(kDipSettleUs);
+    uint8_t value = 0;
+    for (const uint pin : kDipPins) {
+        value = static_cast<uint8_t>((value << 1) | (gpio_get(pin) ? 0u : 1u));
+    }
+    return value;
+}
 
 // eval() 実測用アキュムレータ（time_us_32 はマイクロ秒単位）
 static uint32_t s_eval_us    = 0;
@@ -78,13 +103,14 @@ void id_report() {
     date_iso(bld);
     printf("+XI pf=" PICO_PLATFORM_STR
            " chip=B%u flash=%uKB prog=%uKB(%u%%) ram=%uKB bss=%uKB(%u%%)"
-           " clk=%uMHz git=%s bld=%s\r\n",
+           " clk=%uMHz dip=%u git=%s bld=%s\r\n",
            static_cast<unsigned>(chip_rev),
            static_cast<unsigned>(kFlashKb),
            static_cast<unsigned>(prog_kb),  static_cast<unsigned>(prog_pct),
            static_cast<unsigned>(kRamKb),
            static_cast<unsigned>(bss_kb),   static_cast<unsigned>(bss_pct),
            static_cast<unsigned>(clk_mhz),
+           static_cast<unsigned>(s_dip_value),
            GIT_HASH,
            bld);
 }
@@ -106,7 +132,8 @@ void bench_report_protocol() {
            (unsigned long)ns_per_tick);
 }
 
-void apply_reset(Vothello_top* dut) {
+void apply_reset(Vothello_top* dut, uint8_t strategy) {
+    dut->strategy = strategy;  // proto がリセット中に取り込む
     dut->rst = 1;
     dut->rx_valid = 0;
     for (int i = 0; i < 4; ++i) tick(dut);
@@ -127,7 +154,8 @@ int main() {
 
     auto* const ctx = new VerilatedContext;
     auto* const dut = new Vothello_top{ctx, "othello_top"};
-    apply_reset(dut);
+    s_dip_value = read_dip_switch();
+    apply_reset(dut, s_dip_value);
 
     // XB/XI コマンドインターセプト用ラインバッファ (RUP v0.2 X* 拡張)。
     // 行終端は LF (CR+LF / LF 単独どちらも受け付ける)。

@@ -13,8 +13,13 @@ from cocotb.triggers import RisingEdge
 CLK_PERIOD_NS = 10
 
 
-async def reset(dut) -> None:
-    """rst を 2 サイクル叩いて初期状態へ。"""
+async def reset(dut, strategy: int = 0) -> None:
+    """rst を 2 サイクル叩いて初期状態へ。
+
+    strategy は着手の方式の選択 (DIP スイッチの値)。proto はリセット中に
+    これを取り込むので、rst を下ろす前に置く。
+    """
+    dut.strategy.value = strategy
     dut.rst.value = 1
     dut.rx_valid.value = 0
     dut.rx_byte.value = 0
@@ -462,6 +467,7 @@ from pathlib import Path as _Path  # noqa: E402
 _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from golden.reversi_rules import (  # noqa: E402
     apply_move as _apply_move,
+    find_flips as _find_flips,
     fmt_coord as _fmt_coord,
     init_board as _init_board,
     legal_moves as _legal_moves,
@@ -672,12 +678,12 @@ async def end_then_sb_restarts_game(dut) -> None:
 
 # ===== RUP v0.2: CA (Capability) =====
 
-CA_EXPECTED = b"+CA PI VE CA SB SW MO PA EB EW ED XI XB\r\n"
+CA_EXPECTED = b"+CA PI VE CA SB SW MO PA EB EW ED XI XB XS\r\n"
 
 
 @cocotb.test()
 async def ca_returns_capability_list(dut) -> None:
-    """CA\\r\\n → +CA PI VE CA SB SW MO PA EB EW ED XI XB\\r\\n"""
+    """CA\\r\\n → +CA PI VE CA SB SW MO PA EB EW ED XI XB XS\\r\\n"""
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
     await reset(dut)
     await send_line(dut, b"CA\r\n")
@@ -695,7 +701,7 @@ async def ca_includes_known_commands(dut) -> None:
     assert resp.startswith(b"+CA "), f"+CA で始まること: {resp!r}"
     tokens = resp[4:].rstrip(b"\r\n").split(b" ")
     for cmd in (b"PI", b"VE", b"CA", b"SB", b"SW", b"MO", b"PA",
-                b"EB", b"EW", b"ED", b"XI", b"XB"):
+                b"EB", b"EW", b"ED", b"XI", b"XB", b"XS"):
         assert cmd in tokens, f"+CA にトークン {cmd!r} が含まれない: {resp!r}"
 
 
@@ -714,3 +720,227 @@ async def empty_line_silently_discarded(dut) -> None:
     await send_line(dut, b"PI\r\n")
     resp = await collect_response(dut)
     assert resp == b"+PI\r\n", f"空行後の PI: {resp!r}"
+
+
+# ===== 着手の方式をリセット時に選ぶ (DIP スイッチ) =====
+#
+# strategy (4 bit) をリセット中に取り込み、着手の方式と VE の名前を決める。
+#   0 = 最初の合法手 (lsb)   1 = 反転数最大 (max_gain)   2 = 角優先 (corner)
+#   それ以外 = lsb として動く
+
+
+_CORNERS = {(0, 0), (0, 7), (7, 0), (7, 7)}
+_VE_NAMES = {
+    0: b"+VE02SW-FPGA-pico2-reversi-01-lsb.",
+    1: b"+VE02SW-FPGA-pico2-reversi-02-max_gain.",
+    2: b"+VE02SW-FPGA-pico2-reversi-03-corner.",
+}
+
+
+def _idx(move) -> int:
+    return move[0] * 8 + move[1]
+
+
+def _expected_pick(board, color, strategy: int):
+    """RTL のピッカーと同じ規則で手を選ぶ (Python の参照)。"""
+    legal = sorted(_legal_moves(board, color), key=_idx)
+    if not legal:
+        return None
+    if strategy == 1:
+        # 反転数最大。同数なら bit index 最小
+        return max(legal, key=lambda m: (len(_find_flips(board, *m, color)), -_idx(m)))
+    if strategy == 2:
+        corners = [m for m in legal if m in _CORNERS]
+        return corners[0] if corners else legal[0]
+    return legal[0]
+
+
+def _expected_game(strategy: int, plies: int):
+    """黒 (DUT) 対 白 (最後の合法手を選ぶ相手) の手順を返す。
+
+    戻り値は [(白の手 or None, 黒の手), ...]。どちらかが打てなくなったら打ち切る。
+    """
+    board = _init_board()
+    first = _expected_pick(board, _BLACK, strategy)
+    _apply_move(board, *first, _BLACK)
+    seq = [(None, first)]
+    for _ in range(plies):
+        opp_legal = sorted(_legal_moves(board, _WHITE), key=_idx)
+        if not opp_legal:
+            break
+        opp = opp_legal[-1]
+        _apply_move(board, *opp, _WHITE)
+        mine = _expected_pick(board, _BLACK, strategy)
+        if mine is None:
+            break
+        _apply_move(board, *mine, _BLACK)
+        seq.append((opp, mine))
+    return seq
+
+
+async def _play_and_check(dut, strategy: int, plies: int = 20,
+                          start_clock: bool = True, do_reset: bool = True) -> None:
+    if start_clock:
+        cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    if do_reset:
+        await reset(dut, strategy)
+    for ply, (opp, mine) in enumerate(_expected_game(strategy, plies)):
+        line = b"SB\r\n" if opp is None else b"MO" + _fmt_coord(*opp).encode() + b"\r\n"
+        await send_line(dut, line)
+        mo_line = await collect_response(dut)
+        await collect_response(dut)  # BS
+        expected = b"MO" + _fmt_coord(*mine).encode() + b"\r\n"
+        assert mo_line == expected, (
+            f"strategy={strategy} ply {ply}: 送った {line!r} → 期待 {expected!r} / 実際 {mo_line!r}"
+        )
+
+
+@cocotb.test()
+async def reference_games_differ(dut) -> None:  # noqa: ARG001
+    """3 つの方式の参照の手順が途中で分かれる (下のテストが方式を見分けられる前提)。"""
+    games = [_expected_game(s, 20) for s in (0, 1, 2)]
+    assert games[0] != games[1]
+    assert games[0] != games[2]
+    assert games[1] != games[2]
+
+
+@cocotb.test()
+async def strategy_lsb_plays_first_legal(dut) -> None:
+    await _play_and_check(dut, 0)
+
+
+@cocotb.test()
+async def strategy_max_gain_plays_most_flips(dut) -> None:
+    await _play_and_check(dut, 1)
+
+
+@cocotb.test()
+async def strategy_corner_takes_corner(dut) -> None:
+    await _play_and_check(dut, 2)
+
+
+@cocotb.test()
+async def strategy_unassigned_falls_back_to_lsb(dut) -> None:
+    """割り当てのない値 (15) は lsb として打ち、名前も lsb。"""
+    await _play_and_check(dut, 15)
+    await send_line(dut, b"VE\r\n")
+    resp = await collect_response(dut)
+    assert resp.startswith(_VE_NAMES[0]), resp
+
+
+@cocotb.test()
+async def ve_name_follows_strategy(dut) -> None:
+    """VE の名前に方式の名前が入る。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    for strategy, name in _VE_NAMES.items():
+        await reset(dut, strategy)
+        await send_line(dut, b"VE\r\n")
+        resp = await collect_response(dut)
+        assert resp.startswith(name) and resp.endswith(b"\r\n"), (
+            f"strategy={strategy}: 期待 {name!r}… / 実際 {resp!r}"
+        )
+
+
+@cocotb.test()
+async def strategy_is_latched_at_reset(dut) -> None:
+    """リセットのあとに入力が変わっても、方式は変わらない。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 1)
+    dut.strategy.value = 2
+    await settle(dut)
+    await send_line(dut, b"VE\r\n")
+    resp = await collect_response(dut)
+    assert resp.startswith(_VE_NAMES[1]), resp
+
+
+# ===== XS: 着手の方式をプロトコルで選ぶ (RUP v0.2 の X* 拡張) =====
+#
+#   XS      → +XS<d>        今の方式の番号 (d は 0〜2)
+#   XS<d>   → +XS<d>        待ちの状態 (対局の外) なら方式を変える。次のリセットまで有効
+#             -06 in game   対局中は断る
+#   それ以外 → -00 bad arg
+
+
+async def _query(dut, line: bytes) -> bytes:
+    await send_line(dut, line)
+    return await collect_response(dut)
+
+
+@cocotb.test()
+async def xs_query_returns_current_strategy(dut) -> None:
+    """XS は DIP スイッチで選んだ今の方式を返す。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 2)
+    assert await _query(dut, b"XS\r\n") == b"+XS2\r\n"
+
+
+@cocotb.test()
+async def xs_query_reports_lsb_for_unassigned_dip(dut) -> None:
+    """割り当てのない DIP の値は lsb (0) として報告する。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 15)
+    assert await _query(dut, b"XS\r\n") == b"+XS0\r\n"
+
+
+@cocotb.test()
+async def xs_selects_strategy_when_idle(dut) -> None:
+    """待ちの状態で XS1 を送ると、VE の名前も着手も max_gain になる。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 0)
+    assert await _query(dut, b"XS1\r\n") == b"+XS1\r\n"
+    assert await _query(dut, b"XS\r\n") == b"+XS1\r\n"
+    assert (await _query(dut, b"VE\r\n")).startswith(_VE_NAMES[1])
+    await _play_and_check(dut, 1, start_clock=False, do_reset=False)
+
+
+@cocotb.test()
+async def xs_selects_corner_and_plays_it(dut) -> None:
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 1)
+    assert await _query(dut, b"XS2\r\n") == b"+XS2\r\n"
+    await _play_and_check(dut, 2, start_clock=False, do_reset=False)
+
+
+@cocotb.test()
+async def xs_rejected_during_game(dut) -> None:
+    """対局中の XS<d> は -06 で断り、方式は変えない。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 0)
+    await send_line(dut, b"SB\r\n")
+    await collect_response(dut)  # MO
+    await collect_response(dut)  # BS
+    assert await _query(dut, b"XS2\r\n") == b"-06 in game\r\n"
+    assert await _query(dut, b"XS\r\n") == b"+XS0\r\n"
+
+
+@cocotb.test()
+async def xs_allowed_after_game_end(dut) -> None:
+    """終局の行 (ED) で待ちに戻れば、また選べる。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 0)
+    await send_line(dut, b"SB\r\n")
+    await collect_response(dut)
+    await collect_response(dut)
+    await send_line(dut, b"ED\r\n")
+    await settle(dut)
+    assert await _query(dut, b"XS2\r\n") == b"+XS2\r\n"
+
+
+@cocotb.test()
+async def xs_bad_argument(dut) -> None:
+    """割り当てのない番号、長すぎる引数は -00 bad arg。方式は変えない。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 1)
+    for line in (b"XS3\r\n", b"XS9\r\n", b"XSa\r\n", b"XS12\r\n"):
+        assert await _query(dut, line) == b"-00 bad arg\r\n", line
+    assert await _query(dut, b"XS\r\n") == b"+XS1\r\n"
+
+
+@cocotb.test()
+async def dip_reset_overrides_xs(dut) -> None:
+    """リセットすると XS の選択は消え、DIP スイッチの値に戻る。"""
+    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset(dut, 0)
+    assert await _query(dut, b"XS2\r\n") == b"+XS2\r\n"
+    await reset(dut, 1)
+    assert await _query(dut, b"XS\r\n") == b"+XS1\r\n"

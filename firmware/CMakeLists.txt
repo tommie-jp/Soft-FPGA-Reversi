@@ -49,12 +49,13 @@ endif()
 
 # --- ファームウェアターゲット生成関数 ---
 # 引数:
-#   TARGET_NAME       実行ファイル名 (firmware_lsb / firmware_max_gain)
-#   PICK_STRATEGY_VAL Verilog パラメータ値 (0=LSB, 1=MAX_GAIN)
+#   TARGET_NAME       実行ファイル名
+#
+# 着手の方式はビルドでは決めない。起動時に DIP スイッチ (GP10〜GP13) を読んで選ぶ。
 #
 # 注: LTO は Pico SDK の --wrap=printf/puts/putchar と衝突して link エラーになる
 # (LTO で printf がインライン化され --wrap が効かない) ため採用しない。
-function(add_reversi_firmware TARGET_NAME PICK_STRATEGY_VAL)
+function(add_reversi_firmware TARGET_NAME)
     set(VERILATED_DIR ${CMAKE_BINARY_DIR}/verilated_${TARGET_NAME})
 
     # configure 時に Verilator を実行。RTL ファイルが変わると CONFIGURE_DEPENDS で
@@ -68,12 +69,11 @@ function(add_reversi_firmware TARGET_NAME PICK_STRATEGY_VAL)
         COMMAND ${VERILATOR_BIN} --cc --no-trace --no-timing
                 -y ${RTL_DIR}
                 --Mdir ${VERILATED_DIR}
-                -GPICK_STRATEGY=${PICK_STRATEGY_VAL}
                 ${RTL_DIR}/othello_top.v
         RESULT_VARIABLE _vl_result
     )
     if(NOT _vl_result EQUAL 0)
-        message(FATAL_ERROR "Verilator failed for ${TARGET_NAME} (PICK_STRATEGY=${PICK_STRATEGY_VAL})")
+        message(FATAL_ERROR "Verilator failed for ${TARGET_NAME}")
     endif()
 
     file(GLOB VERILATED_SOURCES CONFIGURE_DEPENDS "${VERILATED_DIR}/Vothello_top*.cpp")
@@ -125,6 +125,5 @@ function(add_reversi_firmware TARGET_NAME PICK_STRATEGY_VAL)
 endfunction()
 
 # --- ターゲット定義 ---
-add_reversi_firmware(firmware_lsb      0)  # 行優先最初の合法手
-add_reversi_firmware(firmware_max_gain 1)  # 反転駒数最大の合法手
-add_reversi_firmware(firmware_corner   2)  # 角優先
+# 3 つの方式 (lsb / max_gain / corner) をすべて含み、DIP スイッチで選ぶ
+add_reversi_firmware(firmware)

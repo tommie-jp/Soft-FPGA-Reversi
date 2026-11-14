@@ -7,7 +7,10 @@
 //
 // 仕様 (RUP v0.2 サブセット):
 //   - PI         → "+PI\r\n"
-//   - VE         → "+VE02<name>\r\n"
+//   - VE         → "+VE02<name>\r\n" (name は着手の方式で変わる)
+//   - XS         → "+XS<d>\r\n" (今の着手の方式。RUP v0.2 の X* 拡張)
+//   - XS<d>      → 待ちの状態なら方式を d に変えて "+XS<d>\r\n"。
+//                  対局中は "-06 in game"、d が 0〜2 以外なら "-00 bad arg"
 //   - その他全部 → "-01 unknown\r\n"
 //   - 空行 (CR+LF のみ) → サイレント破棄 (応答なし)
 //
@@ -17,16 +20,20 @@
 //   - tx_valid は応答送信中、1 byte あたり 1 cycle High。
 //     tx_byte は同時に有効。ホスト側はサンプリングするだけで OK。
 //   - 行 buffer は 128 byte。BO<64 char> 等の将来拡張用に余裕を持たせる。
+//   - strategy は着手の方式 (DIP スイッチの値)。rst 中に取り込み、次の rst まで保つ
+//     (待ちの状態で XS<d> を受けたら、その値で上書きする)。
+//       0 = pick_lsb (行優先最初の合法手)
+//       1 = pick_max_gain (反転駒数最大の合法手)
+//       2 = pick_corner (角優先、なければ pick_lsb)
+//       それ以外 = pick_lsb
 
 `default_nettype none
 
-module proto #(
-    // 0 = pick_lsb (行優先最初の合法手)
-    // 1 = pick_max_gain (反転駒数最大の合法手)
-    parameter PICK_STRATEGY = 0
-) (
+module proto (
     input  wire        clk,
     input  wire        rst,
+    // 着手の方式 (rst 中に取り込む)
+    input  wire [3:0]  strategy,
     // RX byte stream (1-cycle pulse pattern)
     input  wire        rx_valid,
     input  wire [7:0]  rx_byte,
@@ -85,37 +92,37 @@ module proto #(
     // CR+LF (\r\n) は ROM が自動付加するため文字列には含めない。
     localparam        PO_STR       = "+PI";
     localparam integer PO_STR_CHARS = 3;
-    localparam        VE_STR_01       = "+VE02SW-FPGA-pico2-reversi-01-lsb.56";
-    localparam        VE_STR_02       = "+VE02SW-FPGA-pico2-reversi-02-max_gain.56";
-    localparam        VE_STR_03       = "+VE02SW-FPGA-pico2-reversi-03-corner.56";
+    localparam        VE_STR_01       = "+VE02SW-FPGA-pico2-reversi-01-lsb.57";
+    localparam        VE_STR_02       = "+VE02SW-FPGA-pico2-reversi-02-max_gain.57";
+    localparam        VE_STR_03       = "+VE02SW-FPGA-pico2-reversi-03-corner.57";
     localparam integer VE_STR_01_CHARS = 36;
     localparam integer VE_STR_02_CHARS = 41;
     localparam integer VE_STR_03_CHARS = 39;
-    localparam integer VE_STR_CHARS   = (PICK_STRATEGY == 0) ? VE_STR_01_CHARS :
-                                        (PICK_STRATEGY == 1) ? VE_STR_02_CHARS : VE_STR_03_CHARS;
-    /* verilator lint_off WIDTHEXPAND */
-    localparam        VE_STR          = (PICK_STRATEGY == 0) ? VE_STR_01 :
-                                        (PICK_STRATEGY == 1) ? VE_STR_02 : VE_STR_03;
-    /* verilator lint_on WIDTHEXPAND */
     localparam        ER_STR       = "-01 unknown";
     localparam integer ER_STR_CHARS = 11;
     localparam        PA_STR       = "PA";
     localparam integer PA_STR_CHARS = 2;
-    localparam        CA_STR       = "+CA PI VE CA SB SW MO PA EB EW ED XI XB";
-    localparam integer CA_STR_CHARS = 39;
+    localparam        CA_STR       = "+CA PI VE CA SB SW MO PA EB EW ED XI XB XS";
+    localparam integer CA_STR_CHARS = 42;
+    localparam        E06_STR       = "-06 in game";
+    localparam integer E06_STR_CHARS = 11;
+    localparam        E00_STR       = "-00 bad arg";
+    localparam integer E00_STR_CHARS = 11;
 
     localparam [6:0] ROM_PO_OFF = 7'd0;
     /* verilator lint_off WIDTHTRUNC */
     localparam [6:0] ROM_PO_LEN = PO_STR_CHARS + 2;   // +CR+LF (integer→7bit は意図的)
-    localparam [6:0] ROM_VE_LEN = VE_STR_CHARS + 2;
     localparam [6:0] ROM_ER_LEN = ER_STR_CHARS + 2;
     localparam [6:0] ROM_PA_LEN = PA_STR_CHARS + 2;
     localparam [6:0] ROM_CA_LEN = CA_STR_CHARS + 2;
+    localparam [6:0] ROM_E06_LEN = E06_STR_CHARS + 2;
+    localparam [6:0] ROM_E00_LEN = E00_STR_CHARS + 2;
     /* verilator lint_on WIDTHTRUNC */
-    localparam [6:0] ROM_VE_OFF = ROM_PO_OFF + ROM_PO_LEN;
-    localparam [6:0] ROM_ER_OFF = ROM_VE_OFF + ROM_VE_LEN;
+    localparam [6:0] ROM_ER_OFF = ROM_PO_OFF + ROM_PO_LEN;
     localparam [6:0] ROM_PA_OFF = ROM_ER_OFF + ROM_ER_LEN;
     localparam [6:0] ROM_CA_OFF = ROM_PA_OFF + ROM_PA_LEN;
+    localparam [6:0] ROM_E06_OFF = ROM_CA_OFF + ROM_CA_LEN;
+    localparam [6:0] ROM_E00_OFF = ROM_E06_OFF + ROM_E06_LEN;
 
     // resp_rom(i): ROM インデックス i に対応する応答バイトを返す。
     // 各文字列 localparam からバイト抽出して生成する (Verilog 文字列は MSB が先頭文字)。
@@ -126,16 +133,10 @@ module proto #(
         integer       bit_off;
     begin
         resp_rom = 8'h00;
-        if (i < ROM_VE_OFF) begin
+        if (i < ROM_ER_OFF) begin
             off     = i - ROM_PO_OFF;
             bit_off = (PO_STR_CHARS - 1 - off) * 8;
-            if      (i < ROM_VE_OFF - 7'd2) resp_rom = PO_STR[bit_off +: 8];
-            else if (i < ROM_VE_OFF - 7'd1) resp_rom = 8'h0D;  // CR
-            else                             resp_rom = 8'h0A;  // LF
-        end else if (i < ROM_ER_OFF) begin
-            off     = i - ROM_VE_OFF;
-            bit_off = (VE_STR_CHARS - 1 - off) * 8;
-            if      (i < ROM_ER_OFF - 7'd2) resp_rom = VE_STR[bit_off +: 8];
+            if      (i < ROM_ER_OFF - 7'd2) resp_rom = PO_STR[bit_off +: 8];
             else if (i < ROM_ER_OFF - 7'd1) resp_rom = 8'h0D;  // CR
             else                             resp_rom = 8'h0A;  // LF
         end else if (i < ROM_PA_OFF) begin
@@ -150,12 +151,59 @@ module proto #(
             if      (i < ROM_PA_OFF + PA_STR_CHARS) resp_rom = PA_STR[bit_off +: 8];
             else if (off < ROM_PA_LEN - 7'd1)       resp_rom = 8'h0D;  // CR
             else                                     resp_rom = 8'h0A;  // LF
-        end else begin
+        end else if (i < ROM_E06_OFF) begin
             off     = i - ROM_CA_OFF;
             bit_off = (CA_STR_CHARS - 1 - off) * 8;
             if      (off < CA_STR_CHARS)         resp_rom = CA_STR[bit_off +: 8];
             else if (off < ROM_CA_LEN - 7'd1)    resp_rom = 8'h0D;  // CR
             else                                  resp_rom = 8'h0A;  // LF
+        end else if (i < ROM_E00_OFF) begin
+            off     = i - ROM_E06_OFF;
+            bit_off = (E06_STR_CHARS - 1 - off) * 8;
+            if      (off < E06_STR_CHARS)        resp_rom = E06_STR[bit_off +: 8];
+            else if (off < ROM_E06_LEN - 7'd1)   resp_rom = 8'h0D;  // CR
+            else                                  resp_rom = 8'h0A;  // LF
+        end else begin
+            off     = i - ROM_E00_OFF;
+            bit_off = (E00_STR_CHARS - 1 - off) * 8;
+            if      (off < E00_STR_CHARS)        resp_rom = E00_STR[bit_off +: 8];
+            else if (off < ROM_E00_LEN - 7'd1)   resp_rom = 8'h0D;  // CR
+            else                                  resp_rom = 8'h0A;  // LF
+        end
+    end
+    endfunction
+    /* verilator lint_on WIDTHEXPAND */
+
+    // ----- 着手の方式 -----
+    localparam [1:0] STRAT_LSB      = 2'd0;
+    localparam [1:0] STRAT_MAX_GAIN = 2'd1;
+    localparam [1:0] STRAT_CORNER   = 2'd2;
+    reg [1:0] strat_q;   // rst 中に strategy から取り込む
+
+    // VE の応答の長さ (CR+LF 込み)
+    /* verilator lint_off WIDTHTRUNC */
+    wire [6:0] ve_len = (strat_q == STRAT_MAX_GAIN) ? VE_STR_02_CHARS + 2 :
+                        (strat_q == STRAT_CORNER)   ? VE_STR_03_CHARS + 2 :
+                                                      VE_STR_01_CHARS + 2;
+    /* verilator lint_on WIDTHTRUNC */
+
+    // ve_byte(s, i): 方式 s の VE 応答の i 番目のバイト (末尾に CR+LF)
+    /* verilator lint_off WIDTHEXPAND */
+    function automatic [7:0] ve_byte(input [1:0] s, input [6:0] i);
+        integer n;
+    begin
+        n = (s == STRAT_MAX_GAIN) ? VE_STR_02_CHARS :
+            (s == STRAT_CORNER)   ? VE_STR_03_CHARS : VE_STR_01_CHARS;
+        if (i < n) begin
+            case (s)
+                STRAT_MAX_GAIN: ve_byte = VE_STR_02[(n - 1 - i) * 8 +: 8];
+                STRAT_CORNER:   ve_byte = VE_STR_03[(n - 1 - i) * 8 +: 8];
+                default:        ve_byte = VE_STR_01[(n - 1 - i) * 8 +: 8];
+            endcase
+        end else if (i == n) begin
+            ve_byte = 8'h0D;  // CR
+        end else begin
+            ve_byte = 8'h0A;  // LF
         end
     end
     endfunction
@@ -195,10 +243,14 @@ module proto #(
     //   TX_MODE_ROM PI/VE/ER02 等の固定文字列を resp_rom() で読み出す
     //   TX_MODE_MO  "MO<xy>\r\n" 6 byte を動的生成 (xy は coord.format 出力)
     //   TX_MODE_BS  "BS<64char>\r\n" 68 byte を動的生成 (cell は gs_black/white)
-    localparam [1:0] TX_MODE_ROM = 2'd0;
-    localparam [1:0] TX_MODE_MO  = 2'd1;
-    localparam [1:0] TX_MODE_BS  = 2'd2;
-    reg [1:0] tx_mode;
+    //   TX_MODE_VE  "+VE02<name>\r\n" を ve_byte() で読み出す (name は方式で変わる)
+    //   TX_MODE_XS  "+XS<d>\r\n" 6 byte (d は strat_q)
+    localparam [2:0] TX_MODE_ROM = 3'd0;
+    localparam [2:0] TX_MODE_MO  = 3'd1;
+    localparam [2:0] TX_MODE_BS  = 3'd2;
+    localparam [2:0] TX_MODE_VE  = 3'd3;
+    localparam [2:0] TX_MODE_XS  = 3'd4;
+    reg [2:0] tx_mode;
 
     // MO 送信が終わったら BS<board> を続ける
     reg tx_pending_bs;
@@ -219,6 +271,11 @@ module proto #(
     wire is_eb = (buf_len == 8'd2) && (buf_mem[0] == "E") && (buf_mem[1] == "B");
     wire is_ew = (buf_len == 8'd2) && (buf_mem[0] == "E") && (buf_mem[1] == "W");
     wire is_ed = (buf_len == 8'd2) && (buf_mem[0] == "E") && (buf_mem[1] == "D");
+    // XS / XS<d>: 着手の方式の問い合わせと選択 (X* 拡張)
+    wire is_xs     = (buf_len >= 8'd2) && (buf_mem[0] == "X") && (buf_mem[1] == "S");
+    wire xs_digit  = (buf_mem[2] >= "0") && (buf_mem[2] <= "2");
+    wire is_xs_get = is_xs && (buf_len == 8'd2);
+    wire is_xs_set = is_xs && (buf_len == 8'd3) && xs_digit;
 
     // ----- 内部状態 + 計算モジュール群 -----
 
@@ -257,32 +314,32 @@ module proto #(
         .side(gs_my_side), .legal(lb_legal)
     );
 
-    // ピッカー: PICK_STRATEGY で差し替え
+    // ピッカー: 3 つを並べて置き、strat_q で選ぶ
     wire [63:0] ps_own = gs_my_side ? gs_white : gs_black;
     wire [63:0] ps_opp = gs_my_side ? gs_black : gs_white;
     /* verilator lint_off UNUSEDSIGNAL */
-    wire        ps_valid;
-    wire [5:0]  ps_index;
-    wire [63:0] ps_one_hot;
+    wire        pl_valid, pm_valid, pc_valid;
+    wire [5:0]  pl_index, pm_index, pc_index;
+    wire [63:0] pl_one_hot, pm_one_hot, pc_one_hot;
     /* verilator lint_on UNUSEDSIGNAL */
-    generate
-        if (PICK_STRATEGY == 1) begin : gen_pick_max_gain
-            pick_max_gain u_pick (
-                .in_bits(lb_legal), .own(ps_own), .opp(ps_opp),
-                .valid(ps_valid), .index(ps_index), .one_hot(ps_one_hot)
-            );
-        end else if (PICK_STRATEGY == 2) begin : gen_pick_corner
-            pick_corner u_pick (
-                .in_bits(lb_legal),
-                .valid(ps_valid), .index(ps_index), .one_hot(ps_one_hot)
-            );
-        end else begin : gen_pick_lsb
-            pick_lsb u_pick (
-                .in_bits(lb_legal),
-                .valid(ps_valid), .index(ps_index), .one_hot(ps_one_hot)
-            );
-        end
-    endgenerate
+    pick_lsb u_pick_lsb (
+        .in_bits(lb_legal),
+        .valid(pl_valid), .index(pl_index), .one_hot(pl_one_hot)
+    );
+    pick_max_gain u_pick_max_gain (
+        .in_bits(lb_legal), .own(ps_own), .opp(ps_opp),
+        .valid(pm_valid), .index(pm_index), .one_hot(pm_one_hot)
+    );
+    pick_corner u_pick_corner (
+        .in_bits(lb_legal),
+        .valid(pc_valid), .index(pc_index), .one_hot(pc_one_hot)
+    );
+    wire        ps_valid   = (strat_q == STRAT_MAX_GAIN) ? pm_valid   :
+                             (strat_q == STRAT_CORNER)   ? pc_valid   : pl_valid;
+    wire [5:0]  ps_index   = (strat_q == STRAT_MAX_GAIN) ? pm_index   :
+                             (strat_q == STRAT_CORNER)   ? pc_index   : pl_index;
+    wire [63:0] ps_one_hot = (strat_q == STRAT_MAX_GAIN) ? pm_one_hot :
+                             (strat_q == STRAT_CORNER)   ? pc_one_hot : pl_one_hot;
 
     // coord: parse 用は MO 受信時に buf_mem の [2..3] を渡す。
     //        format 用は pick_lsb の index を渡し、自分の手の文字列を得る。
@@ -326,6 +383,9 @@ module proto #(
 
     always @(posedge clk) begin
         if (rst) begin
+            // 割り当てのない値は lsb として扱う
+            strat_q  <= (strategy == 4'd1) ? STRAT_MAX_GAIN :
+                        (strategy == 4'd2) ? STRAT_CORNER   : STRAT_LSB;
             buf_len  <= 0;
             state    <= S_RECV;
             tx_valid <= 0;
@@ -388,11 +448,27 @@ module proto #(
                             tx_idx <= ROM_PO_OFF;
                             tx_end <= ROM_PO_OFF + ROM_PO_LEN;
                         end else if (is_ve) begin
-                            tx_idx <= ROM_VE_OFF;
-                            tx_end <= ROM_VE_OFF + ROM_VE_LEN;
+                            tx_mode <= TX_MODE_VE;
+                            tx_idx  <= 7'd0;
+                            tx_end  <= ve_len;
                         end else if (is_ca) begin
                             tx_idx <= ROM_CA_OFF;
                             tx_end <= ROM_CA_OFF + ROM_CA_LEN;
+                        end else if (is_xs_get) begin
+                            tx_mode <= TX_MODE_XS;
+                            tx_idx  <= 7'd0;
+                            tx_end  <= 7'd6;            // "+XS<d>\r\n"
+                        end else if (is_xs_set && gs_phase == PHASE_IDLE) begin
+                            strat_q <= buf_mem[2][1:0];  // "0"〜"2" の下位 2 bit
+                            tx_mode <= TX_MODE_XS;
+                            tx_idx  <= 7'd0;
+                            tx_end  <= 7'd6;
+                        end else if (is_xs_set) begin
+                            tx_idx <= ROM_E06_OFF;      // 対局中は変えない
+                            tx_end <= ROM_E06_OFF + ROM_E06_LEN;
+                        end else if (is_xs) begin
+                            tx_idx <= ROM_E00_OFF;      // 番号の誤り・形の誤り
+                            tx_end <= ROM_E00_OFF + ROM_E00_LEN;
                         end else begin
                             tx_idx <= ROM_ER_OFF;
                             tx_end <= ROM_ER_OFF + ROM_ER_LEN;
@@ -514,6 +590,19 @@ module proto #(
                             end
                             TX_MODE_BS:
                                 tx_byte <= bs_byte(tx_idx, gs_black, gs_white);
+                            TX_MODE_VE:
+                                tx_byte <= ve_byte(strat_q, tx_idx);
+                            TX_MODE_XS: begin
+                                case (tx_idx[2:0])
+                                    3'd0: tx_byte <= "+";
+                                    3'd1: tx_byte <= "X";
+                                    3'd2: tx_byte <= "S";
+                                    3'd3: tx_byte <= "0" + {6'd0, strat_q};
+                                    3'd4: tx_byte <= 8'h0D;  // CR
+                                    3'd5: tx_byte <= 8'h0A;  // LF
+                                    default: tx_byte <= 8'h00;
+                                endcase
+                            end
                             default: tx_byte <= 8'h00;
                         endcase
                         tx_valid <= 1'b1;

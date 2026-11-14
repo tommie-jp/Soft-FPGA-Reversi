@@ -6,20 +6,21 @@
 //
 // 構成:
 //   - proto: UART テキストプロトコル本体。内部に
-//            game_state / legal_bb / pick_lsb / coord を持つ。
+//            game_state / legal_bb / pick_* / coord を持つ。
 //
-// firmware からは rx/tx の byte 線のみ公開。
+// firmware からは rx/tx の byte 線と strategy (DIP スイッチ) を公開。
 
 `default_nettype none
 
-module othello_top #(
-    // 0 = pick_lsb      (行優先最初の合法手)
-    // 1 = pick_max_gain (反転駒数最大の合法手)
-    // 2 = pick_corner   (角優先、なければ pick_lsb)
-    parameter PICK_STRATEGY = 0
-) (
+module othello_top (
     input  wire        clk,
     input  wire        rst,
+    // 着手の方式 (DIP スイッチの値。rst 中に取り込む)
+    //   0 = pick_lsb      (行優先最初の合法手)
+    //   1 = pick_max_gain (反転駒数最大の合法手)
+    //   2 = pick_corner   (角優先、なければ pick_lsb)
+    //   それ以外 = pick_lsb
+    input  wire [3:0]  strategy,
     // RX byte stream (firmware: stdin → 1-cycle pulse)
     input  wire        rx_valid,
     input  wire [7:0]  rx_byte,
@@ -28,9 +29,10 @@ module othello_top #(
     output wire [7:0]  tx_byte
 );
 
-    proto #(.PICK_STRATEGY(PICK_STRATEGY)) u_proto (
+    proto u_proto (
         .clk      (clk),
         .rst      (rst),
+        .strategy (strategy),
         .rx_valid (rx_valid),
         .rx_byte  (rx_byte),
         .tx_valid (tx_valid),

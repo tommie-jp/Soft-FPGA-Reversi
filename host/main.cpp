@@ -227,7 +227,8 @@ void id_report(FILE* out) {
     std::fflush(out);
 }
 
-void apply_reset(Vothello_top* dut) {
+void apply_reset(Vothello_top* dut, uint8_t strategy) {
+    dut->strategy = strategy;  // 実機の DIP スイッチの代わり。proto がリセット中に取り込む
     dut->rst = 1;
     dut->rx_valid = 0;
     for (int i = 0; i < 4; ++i) tick(dut);
@@ -258,8 +259,19 @@ RxState read_stdin_byte(uint8_t* out) {
 
 int main(int argc, char** argv) {
     bool debug_mode = false;
+    // --strategy N: 着手の方式 (0=lsb 1=max_gain 2=corner。実機の DIP スイッチに当たる)
+    uint8_t strategy = 0;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--debug") == 0) debug_mode = true;
+        if (std::strcmp(argv[i], "--debug") == 0) {
+            debug_mode = true;
+        } else if (std::strcmp(argv[i], "--strategy") == 0 && i + 1 < argc) {
+            const int v = std::atoi(argv[++i]);
+            if (v < 0 || v > 15) {
+                std::fprintf(stderr, "--strategy は 0〜15 (0=lsb 1=max_gain 2=corner): %s\n", argv[i]);
+                return 2;
+            }
+            strategy = static_cast<uint8_t>(v);
+        }
     }
 
     auto* const ctx = new VerilatedContext;
@@ -273,7 +285,7 @@ int main(int argc, char** argv) {
     ctx->commandArgs(vl_argc, const_cast<char**>(vl_argv));
 
     auto* const dut = new Vothello_top{ctx, "othello_top"};
-    apply_reset(dut);
+    apply_reset(dut, strategy);
 
     set_stdin_nonblocking();
 

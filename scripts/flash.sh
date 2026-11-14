@@ -9,14 +9,14 @@ set -euo pipefail
 #   - Probe の SWD/UART を Pico 2 に接続済み
 #
 # 使い方:
-#   scripts/flash.sh                               # firmware_lsb (デフォルト)
-#   scripts/flash.sh firmware/build/firmware_max_gain.elf
+#   scripts/flash.sh                               # firmware/build/firmware.elf (デフォルト)
+#   (着手の方式は書き込み後に DIP スイッチで選ぶ。GP10〜GP13、すべて OFF で lsb)
 #   scripts/flash.sh path/to/other.elf             # 任意の ELF
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
-ELF="${1:-firmware/build/firmware_lsb.elf}"
+ELF="${1:-firmware/build/firmware.elf}"
 if [[ ! -f "${ELF}" ]]; then
     echo "ELF が見つからない: ${ELF}" >&2
     echo "scripts/build-pico.sh を先に実行" >&2

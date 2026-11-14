@@ -34,14 +34,8 @@ USER_UID=$(id -u) USER_GID=$(id -g) \
 ./scripts/build-pico.sh
 ```
 
-**全アルゴリズム分が同時にビルドされる**（[`firmware/CMakeLists.txt`](../firmware/CMakeLists.txt) の
-`add_reversi_firmware` を複数回呼び出し）:
-
-| 成果物 | アルゴリズム | `PICK_STRATEGY` |
-| --- | --- | --- |
-| `firmware/build/firmware_lsb.uf2` | `pick_lsb` — 行優先最初の合法手 | 0 |
-| `firmware/build/firmware_max_gain.uf2` | `pick_max_gain` — 反転駒数最大 | 1 |
-| `firmware/build/firmware_corner.uf2` | `pick_corner` — 角優先 | 2 |
+成果物は `firmware/build/firmware.uf2` (と `firmware.elf`) の 1 つ。
+**3 つの着手の方式をすべて含み、どれを使うかは起動時に選ぶ** (→ [着手の方式を選ぶ](#着手の方式を選ぶ))。
 
 クリーンビルドが必要な場合:
 
@@ -63,11 +57,50 @@ rm -rf firmware/build && ./scripts/build-pico.sh
 事前に Probe を WSL2 に attach 済みであること（→ [02-準備](02-準備.md) の usbipd 手順）。
 
 ```bash
-./scripts/flash.sh                                        # firmware_lsb（デフォルト）
-./scripts/flash.sh firmware/build/firmware_max_gain.elf  # pick_max_gain を書き込む
-./scripts/flash.sh firmware/build/firmware_corner.elf    # pick_corner を書き込む
+./scripts/flash.sh                                        # firmware/build/firmware.elf を書き込む
 # → Programming → Verified OK → shutdown
 ```
+
+## 着手の方式を選ぶ
+
+方式は 2 通りで選べる。番号はどちらも同じ。
+
+| 番号 | 方式 | VE の名前 |
+| ---: | --- | --- |
+| 0 | `pick_lsb` — 行優先最初の合法手 | `SW-FPGA-pico2-reversi-01-lsb.NN` |
+| 1 | `pick_max_gain` — 反転駒数最大 | `SW-FPGA-pico2-reversi-02-max_gain.NN` |
+| 2 | `pick_corner` — 角優先 | `SW-FPGA-pico2-reversi-03-corner.NN` |
+| 3〜15 | (割り当てなし。`pick_lsb` として動く) | `...-01-lsb.NN` |
+
+### DIP スイッチ (起動時の既定値)
+
+起動時 (電源投入・リセット時) に GP10〜GP13 の DIP スイッチを 1 度だけ読む。
+配線は Soft-FPGA-TD4 と同じ: スイッチの片側を GPIO、反対側を GND につなぐ。
+プルアップは Pico 2 の内蔵を使うので抵抗は要らない。
+
+| スイッチ | GPIO | ビット |
+| --- | --- | --- |
+| 1 番 | GP10 | 3 (最上位) |
+| 2 番 | GP11 | 2 |
+| 3 番 | GP12 | 1 |
+| 4 番 | GP13 | 0 (最下位) |
+
+ON (GND に落ちて Low) を 1 と読む。すべて OFF なら 0 (`pick_lsb`)、4 番だけ ON なら 1 (`pick_max_gain`)、
+3 番だけ ON なら 2 (`pick_corner`)。読んだ値は `XI` の `dip=` で確かめられる。
+
+### XS コマンド (シリアルから選び直す)
+
+`XS` は RUP v0.2 の `X*` 拡張。対局の外 (起動直後、または `EB` / `EW` / `ED` のあと) なら、
+シリアルから方式を選び直せる。選んだ方式は次のリセットまで有効で、リセットすると DIP スイッチの値に戻る。
+
+```text
+送信: XS        応答: +XS1          今の方式の番号
+送信: XS2       応答: +XS2          方式を 2 (pick_corner) に変える
+送信: XS2       応答: -06 in game   対局中 (SB / SW のあと) は変えない
+送信: XS7       応答: -00 bad arg   番号が 0〜2 以外、または形の誤り
+```
+
+`XS` は `CA` の一覧にも入る。選んだあとに `VE` を送ると、名前に方式が出る。
 
 ## シリアルモニタ
 
@@ -88,7 +121,7 @@ Serial Monitor で COM ポートを開く。
 
 ```text
 送信: XI
-応答: +XI pf=rp2350-arm-s flash=4096KB prog=128KB(3%) ram=520KB bss=48KB(9%) clk=150MHz chip=B2 git=abc1234 bld=2026-04-29
+応答: +XI pf=rp2350-arm-s chip=B2 flash=4096KB prog=252KB(6%) ram=520KB bss=13KB(2%) clk=150MHz dip=1 git=abc1234 bld=2026-04-29
 ```
 
 | フィールド | 内容 | 取得元 |
@@ -98,6 +131,7 @@ Serial Monitor で COM ポートを開く。
 | `prog=` | フラッシュ使用量 KB と % | リンカシンボル `__flash_binary_end - __flash_binary_start` |
 | `ram=` | SRAM 総量 (KB) | RP2350 固定値 520 KB |
 | `bss=` | 静的 SRAM 使用量 KB と % | リンカシンボル `__bss_end__ - SRAM_BASE(0x20000000)` |
+| `dip=` | 起動時に読んだ DIP スイッチの値 (0〜15) | GP10〜GP13 (→ [着手の方式を選ぶ](#着手の方式を選ぶ)) |
 | `clk=` | システムクロック (MHz) | `clock_get_hz(clk_sys)` |
 | `chip=` | チップリビジョン | `SYSINFO CHIP_ID[31:28]`（0=B0, 1=B1, 2=B2） |
 | `git=` | git ショートハッシュ（`+` = ダーティ） | CMake で `git rev-parse --short HEAD` |
